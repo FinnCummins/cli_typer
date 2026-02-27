@@ -23,7 +23,7 @@ var (
 	styleUntyped   = lipgloss.NewStyle().Foreground(colorDim)
 	styleCorrect   = lipgloss.NewStyle().Foreground(colorText)
 	styleIncorrect = lipgloss.NewStyle().Foreground(colorError)
-	styleCursor    = lipgloss.NewStyle().Foreground(colorAccent).Underline(true)
+	styleCursor    = lipgloss.NewStyle().Foreground(colorBg).Background(colorAccent)
 )
 
 // UI element styles
@@ -48,4 +48,12 @@ var (
 
 	styleHighlight = lipgloss.NewStyle().
 			Foreground(colorAccent)
+
+	// Results screen — large WPM display
+	styleBigWPM = lipgloss.NewStyle().
+			Foreground(colorSuccess).
+			Bold(true)
+
+	styleLiveWPM = lipgloss.NewStyle().
+			Foreground(colorDim)
 )
