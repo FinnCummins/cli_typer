@@ -107,7 +107,14 @@ func processKeypress(m model, msg tea.KeyMsg) (model, tea.Cmd) {
 }
 
 func viewTyping(m model) string {
-	const containerWidth = 70
+	// Adapt to terminal width — cap at 70, shrink for narrow terminals
+	containerWidth := 70
+	if m.width > 0 && m.width-10 < containerWidth {
+		containerWidth = m.width - 10
+		if containerWidth < 30 {
+			containerWidth = 30
+		}
+	}
 
 	lines := wrapWords(m.words, containerWidth)
 
@@ -145,7 +152,7 @@ func viewTyping(m model) string {
 
 	textBlock := strings.Join(renderedLines, "\n")
 
-	// Timer display
+	// Status bar: timer on the left, live WPM on the right
 	var timerText string
 	if !m.timerStarted {
 		timerText = styleTimer.Render(fmt.Sprintf("%d", int(m.duration.Seconds())))
@@ -154,10 +161,18 @@ func viewTyping(m model) string {
 		timerText = styleTimer.Render(fmt.Sprintf("%d", int(remaining)))
 	}
 
+	var statusBar string
+	if m.timerStarted {
+		wpm := liveWPM(m)
+		statusBar = timerText + "    " + styleLiveWPM.Render(fmt.Sprintf("%.0f wpm", wpm))
+	} else {
+		statusBar = timerText
+	}
+
 	hint := styleHint.Render("tab restart  esc menu")
 
 	content := lipgloss.JoinVertical(lipgloss.Left,
-		timerText,
+		statusBar,
 		"",
 		textBlock,
 		"",
@@ -165,6 +180,29 @@ func viewTyping(m model) string {
 	)
 
 	return content
+}
+
+// liveWPM calculates the current WPM based on correct characters typed so far.
+func liveWPM(m model) float64 {
+	elapsed := time.Since(m.startTime).Seconds()
+	if elapsed < 1 {
+		return 0
+	}
+
+	correctChars := 0
+	for i := 0; i < m.wordIndex; i++ {
+		typed := m.input[i]
+		target := []rune(m.words[i])
+		for j := 0; j < len(target) && j < len(typed); j++ {
+			if typed[j] == target[j] {
+				correctChars++
+			}
+		}
+		correctChars++ // space between words
+	}
+
+	minutes := elapsed / 60.0
+	return (float64(correctChars) / 5.0) / minutes
 }
 
 // renderWord renders a single word with character-by-character styling.

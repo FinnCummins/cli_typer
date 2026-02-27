@@ -102,8 +102,9 @@ func updateResults(m model, msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func viewResults(m model) string {
-	// Big WPM number
-	wpm := styleStatValue.Copy().Bold(true).Render(fmt.Sprintf("%.0f wpm", m.finalWPM))
+	// Large WPM number as the hero stat
+	wpmNum := styleBigWPM.Render(fmt.Sprintf("%.0f", m.finalWPM))
+	wpmLabel := styleHint.Render(" wpm")
 
 	// Stats
 	acc := styleStatLabel.Render("accuracy     ") + styleStatValue.Render(fmt.Sprintf("%.1f%%", m.finalAccuracy))
@@ -113,7 +114,7 @@ func viewResults(m model) string {
 	hint := styleHint.Render("tab/enter restart  esc menu")
 
 	return lipgloss.JoinVertical(lipgloss.Left,
-		wpm,
+		wpmNum+wpmLabel,
 		"",
 		acc,
 		chars,
