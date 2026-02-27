@@ -1,10 +1,16 @@
 package main
 
-// The menu screen. Two rows:
-//   Row 0: content mode  — toggle between "words" and "quotes" with left/right
-//   Row 1: duration      — cycle between 15s, 30s, 60s with left/right
+// The menu screen. Rows depend on the selected game mode:
 //
-// Up/down (or j/k) to move between rows. Enter to start the test.
+// Classic mode (3 rows):
+//   Row 0: game mode  — classic / falling
+//   Row 1: content    — words / quotes
+//   Row 2: duration   — 15s / 30s / 60s
+//
+// Falling mode (2 rows):
+//   Row 0: game mode  — classic / falling
+//   Row 1: content    — words / quotes
+//   (no duration row — falling mode ends when you lose all lives)
 
 import (
 	"fmt"
@@ -15,10 +21,14 @@ import (
 )
 
 func updateMenu(m model, msg tea.Msg) (tea.Model, tea.Cmd) {
-	// We only care about keypresses on this screen.
 	keyMsg, ok := msg.(tea.KeyMsg)
 	if !ok {
 		return m, nil
+	}
+
+	maxRow := 2
+	if m.gameMode == gameModeFalling {
+		maxRow = 1
 	}
 
 	switch keyMsg.String() {
@@ -27,34 +37,18 @@ func updateMenu(m model, msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.menuRow--
 		}
 	case "down", "j":
-		if m.menuRow < 1 {
+		if m.menuRow < maxRow {
 			m.menuRow++
 		}
 	case "left", "h":
-		if m.menuRow == 0 {
-			// Toggle content mode
-			if m.contentMode == modeWords {
-				m.contentMode = modeQuotes
-			} else {
-				m.contentMode = modeWords
-			}
-		} else {
-			// Cycle duration backward
-			m.duration = cycleDuration(m.duration, -1)
-		}
+		handleMenuLeft(&m)
 	case "right", "l":
-		if m.menuRow == 0 {
-			// Toggle content mode
-			if m.contentMode == modeWords {
-				m.contentMode = modeQuotes
-			} else {
-				m.contentMode = modeWords
-			}
-		} else {
-			// Cycle duration forward
-			m.duration = cycleDuration(m.duration, 1)
-		}
+		handleMenuRight(&m)
 	case "enter":
+		if m.gameMode == gameModeFalling {
+			m = initFallingState(m)
+			return m, fallingTickCmd()
+		}
 		m = initTypingState(m)
 		return m, nil
 	case "q":
@@ -64,13 +58,80 @@ func updateMenu(m model, msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// handleMenuLeft processes left arrow on the current menu row.
+// We use a pointer here so mutations are visible to the caller.
+// (An alternative Go pattern — sometimes simpler than returning the model.)
+func handleMenuLeft(m *model) {
+	switch m.menuRow {
+	case 0: // game mode
+		if m.gameMode == gameModeClassic {
+			m.gameMode = gameModeFalling
+		} else {
+			m.gameMode = gameModeClassic
+		}
+		// Clamp menuRow if we switched to a mode with fewer rows
+		maxRow := 2
+		if m.gameMode == gameModeFalling {
+			maxRow = 1
+		}
+		if m.menuRow > maxRow {
+			m.menuRow = maxRow
+		}
+	case 1: // content mode
+		if m.contentMode == modeWords {
+			m.contentMode = modeQuotes
+		} else {
+			m.contentMode = modeWords
+		}
+	case 2: // duration (classic only)
+		m.duration = cycleDuration(m.duration, -1)
+	}
+}
+
+func handleMenuRight(m *model) {
+	switch m.menuRow {
+	case 0:
+		if m.gameMode == gameModeClassic {
+			m.gameMode = gameModeFalling
+		} else {
+			m.gameMode = gameModeClassic
+		}
+		maxRow := 2
+		if m.gameMode == gameModeFalling {
+			maxRow = 1
+		}
+		if m.menuRow > maxRow {
+			m.menuRow = maxRow
+		}
+	case 1:
+		if m.contentMode == modeWords {
+			m.contentMode = modeQuotes
+		} else {
+			m.contentMode = modeWords
+		}
+	case 2:
+		m.duration = cycleDuration(m.duration, 1)
+	}
+}
+
 func viewMenu(m model) string {
 	title := styleTitle.Render("cli_typer")
 
-	// Mode row
-	modeLabel := styleStatLabel.Render("mode      ")
-	wordsText := "words"
-	quotesText := "quotes"
+	// Row 0: Game mode
+	gameModeLabel := styleStatLabel.Render("game      ")
+	var classicText, fallingText string
+	if m.gameMode == gameModeClassic {
+		classicText = styleHighlight.Render("[ classic ]")
+		fallingText = styleUntyped.Render("  falling ")
+	} else {
+		classicText = styleUntyped.Render("  classic  ")
+		fallingText = styleHighlight.Render("[ falling ]")
+	}
+	gameModeRow := gameModeLabel + classicText + " " + fallingText
+
+	// Row 1: Content mode
+	modeLabel := styleStatLabel.Render("words     ")
+	var wordsText, quotesText string
 	if m.contentMode == modeWords {
 		wordsText = styleHighlight.Render("[ words ]")
 		quotesText = styleUntyped.Render("  quotes ")
@@ -80,24 +141,29 @@ func viewMenu(m model) string {
 	}
 	modeRow := modeLabel + wordsText + "  " + quotesText
 
-	// Duration row
-	durLabel := styleStatLabel.Render("duration  ")
-	var durParts []string
-	for _, d := range durations {
-		text := fmt.Sprintf("%ds", int(d.Seconds()))
-		if d == m.duration {
-			durParts = append(durParts, styleHighlight.Render(fmt.Sprintf("[ %s ]", text)))
-		} else {
-			durParts = append(durParts, styleUntyped.Render(fmt.Sprintf("  %s  ", text)))
+	// Build the list of rows
+	rows := []string{gameModeRow, modeRow}
+
+	// Row 2: Duration (classic mode only)
+	if m.gameMode == gameModeClassic {
+		durLabel := styleStatLabel.Render("duration  ")
+		var durParts []string
+		for _, d := range durations {
+			text := fmt.Sprintf("%ds", int(d.Seconds()))
+			if d == m.duration {
+				durParts = append(durParts, styleHighlight.Render(fmt.Sprintf("[ %s ]", text)))
+			} else {
+				durParts = append(durParts, styleUntyped.Render(fmt.Sprintf("  %s  ", text)))
+			}
 		}
-	}
-	durRow := durLabel
-	for _, p := range durParts {
-		durRow += p + " "
+		durRow := durLabel
+		for _, p := range durParts {
+			durRow += p + " "
+		}
+		rows = append(rows, durRow)
 	}
 
-	// Arrow indicator for selected row
-	rows := []string{modeRow, durRow}
+	// Add arrow indicator for selected row
 	var renderedRows []string
 	for i, row := range rows {
 		if i == m.menuRow {
@@ -109,17 +175,13 @@ func viewMenu(m model) string {
 
 	hint := styleHint.Render("↑↓ navigate  ←→ change  enter start  q quit")
 
-	return lipgloss.JoinVertical(lipgloss.Left,
-		title,
-		"",
-		renderedRows[0],
-		renderedRows[1],
-		"",
-		hint,
-	)
+	parts := []string{title, ""}
+	parts = append(parts, renderedRows...)
+	parts = append(parts, "", hint)
+
+	return lipgloss.JoinVertical(lipgloss.Left, parts...)
 }
 
-// cycleDuration moves forward or backward through the durations slice.
 func cycleDuration(current time.Duration, direction int) time.Duration {
 	for i, d := range durations {
 		if d == current {

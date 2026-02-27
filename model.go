@@ -1,16 +1,5 @@
 package main
 
-// This file defines the central model and implements bubbletea's tea.Model interface.
-//
-// Bubbletea uses the Elm architecture:
-//   1. Model  — a struct that holds ALL application state
-//   2. Update — a function that receives messages (keypresses, timer ticks, etc.)
-//               and returns an updated model
-//   3. View   — a function that takes the model and returns a string to render
-//
-// The framework calls Update whenever something happens, then calls View to
-// re-render. You never mutate state directly — you return a new model from Update.
-
 import (
 	"time"
 
@@ -19,21 +8,27 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// gameState represents which screen we're on.
 type gameState int
 
 const (
 	stateMenu    gameState = iota
 	stateTyping
 	stateResults
+	stateFalling
 )
 
-// contentMode is what kind of text the user types.
 type contentMode int
 
 const (
 	modeWords  contentMode = iota
 	modeQuotes
+)
+
+type gameMode int
+
+const (
+	gameModeClassic gameMode = iota
+	gameModeFalling
 )
 
 // model holds ALL application state.
@@ -45,38 +40,41 @@ type model struct {
 
 	// Menu
 	menuRow     int
+	gameMode    gameMode
 	contentMode contentMode
 	duration    time.Duration
 
-	// Typing
-	//
-	// The key insight: words[] is the target text, input[][] is what the user typed.
-	// They're parallel arrays — input[i] holds the runes typed for words[i].
-	//
-	// Example:
-	//   words: ["the", "quick", "brown"]
-	//   input: [['t','h','e'], ['q','i','c','k'], []]
-	//                                              ^ wordIndex=2, charIndex=0
-	words     []string  // target words to type
-	input     [][]rune  // what the user has typed for each word
-	wordIndex int       // which word the cursor is on
-	charIndex int       // cursor position within current word's input
+	// Classic typing test
+	words     []string
+	input     [][]rune
+	wordIndex int
+	charIndex int
 
-	// Timer
-	// timer.Model is from the bubbles library — it handles tick scheduling
-	// and sends timer.TickMsg every interval, plus timer.TimeoutMsg when done.
-	// We create it in initTypingState but don't start it until the first keypress.
+	// Classic timer
 	timer        timer.Model
 	timerStarted bool
 	startTime    time.Time
 
-	// Results (will be populated in step 7)
+	// Results (shared between modes)
 	finalWPM      float64
 	finalAccuracy float64
 	correctChars  int
 	totalChars    int
 	correctWords  int
 	totalWords    int
+
+	// Falling words mode
+	fallingWords     []fallingWord // active words on screen
+	fallingInput     []rune        // what the user is currently typing
+	fallingTarget    int           // index of targeted word, or -1
+	fallingLives     int           // starts at 3, game over at 0
+	fallingScore     int           // words destroyed
+	fallingSpeed     float64       // rows per tick (increases over time)
+	fallingSpawnCD   int           // ticks until next word spawns
+	fallingTicks     int           // total ticks elapsed
+	fallingStartTime time.Time     // for "time survived"
+	fallingGameOver  bool
+	fallingCharsTyped int          // total chars in destroyed words (for WPM)
 }
 
 var durations = []time.Duration{
@@ -92,7 +90,7 @@ func initialModel() model {
 	}
 }
 
-// initTypingState sets up a fresh typing session based on current menu settings.
+// initTypingState sets up a fresh classic typing session.
 func initTypingState(m model) model {
 	var words []string
 	if m.contentMode == modeQuotes {
@@ -107,7 +105,7 @@ func initTypingState(m model) model {
 	m.wordIndex = 0
 	m.charIndex = 0
 	m.timerStarted = false
-	m.timer = timer.NewWithInterval(m.duration, time.Second) // ticks every 1s
+	m.timer = timer.NewWithInterval(m.duration, time.Second)
 	return m
 }
 
@@ -133,6 +131,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return updateTyping(m, msg)
 	case stateResults:
 		return updateResults(m, msg)
+	case stateFalling:
+		return updateFalling(m, msg)
 	}
 
 	return m, nil
@@ -143,15 +143,20 @@ func (m model) View() string {
 		return ""
 	}
 
-	var content string
 	switch m.state {
-	case stateMenu:
-		content = viewMenu(m)
-	case stateTyping:
-		content = viewTyping(m)
-	case stateResults:
-		content = viewResults(m)
+	case stateFalling:
+		// Falling mode manages its own full-screen layout
+		return viewFalling(m)
+	default:
+		var content string
+		switch m.state {
+		case stateMenu:
+			content = viewMenu(m)
+		case stateTyping:
+			content = viewTyping(m)
+		case stateResults:
+			content = viewResults(m)
+		}
+		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, content)
 	}
-
-	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, content)
 }

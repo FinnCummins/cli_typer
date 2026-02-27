@@ -56,4 +56,9 @@ var (
 
 	styleLiveWPM = lipgloss.NewStyle().
 			Foreground(colorDim)
+
+	// Falling words mode
+	styleLife = lipgloss.NewStyle().
+			Foreground(colorError).
+			Bold(true)
 )
