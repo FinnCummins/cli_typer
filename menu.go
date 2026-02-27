@@ -35,15 +35,19 @@ func updateMenu(m model, msg tea.Msg) (tea.Model, tea.Cmd) {
 	case "up", "k":
 		if m.menuRow > 0 {
 			m.menuRow--
+			return m, playSound(soundClick)
 		}
 	case "down", "j":
 		if m.menuRow < maxRow {
 			m.menuRow++
+			return m, playSound(soundClick)
 		}
 	case "left", "h":
 		handleMenuLeft(&m)
+		return m, playSound(soundClick)
 	case "right", "l":
 		handleMenuRight(&m)
+		return m, playSound(soundClick)
 	case "enter":
 		if m.gameMode == gameModeFalling {
 			m = initFallingState(m)

@@ -61,4 +61,26 @@ var (
 	styleLife = lipgloss.NewStyle().
 			Foreground(colorError).
 			Bold(true)
+
+	styleShield = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#4fc1ff")).
+			Bold(true)
+
+	styleShieldDamaged = lipgloss.NewStyle().
+				Foreground(colorError)
+
+	styleAlien = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#7c6f9f"))
+
+	styleAlienActive = lipgloss.NewStyle().
+				Foreground(colorAccent).
+				Bold(true)
+
+	styleLaser = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#ff6b6b")).
+			Bold(true)
+
+	styleExplosion = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#ffaa44")).
+			Bold(true)
 )

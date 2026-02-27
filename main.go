@@ -8,6 +8,9 @@ import (
 )
 
 func main() {
+	// Initialize audio (non-fatal — game works silently if audio fails)
+	initAudio()
+
 	// WithAltScreen() takes over the full terminal (like vim does).
 	// When the program exits, the terminal restores to its previous state.
 	p := tea.NewProgram(initialModel(), tea.WithAltScreen())

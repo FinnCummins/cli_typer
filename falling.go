@@ -1,19 +1,13 @@
 package main
 
-// Falling words game mode.
+// Falling words game mode with 2-row alien sprites:
 //
-// Words spawn at the top of the screen and fall downward. Type a word to
-// destroy it before it hits the bottom. You get 3 lives — lose one each
-// time a word reaches the bottom. Difficulty ramps over time: words fall
-// faster and spawn more frequently.
+//   ╱‾‾‾╲      <- head row (y-1)
+//   >{the}<    <- body row (y, where the word text lives)
 //
-// Word targeting: when you type a character with no active target, we
-// find the lowest falling word whose first letter matches. That word
-// becomes your target (highlighted). Finish typing it to destroy it.
-//
-// The animation loop uses tea.Tick — a bubbletea function that fires
-// a message after a delay. We return a new tick command each time to
-// keep the loop going (tea.Tick is one-shot, not repeating).
+// - Turret on the shield slides to track the targeted word
+// - Laser beam + explosion on word destroy
+// - Overlap-aware spawning prevents aliens from stacking
 
 import (
 	"fmt"
@@ -25,30 +19,58 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// fallingWord represents one word on the play field.
+const (
+	edgePadding     = 7
+	turretSpeed     = 3
+	laserDuration   = 3
+	explodeDuration = 4
+	wingWidth       = 2 // characters per wing on each side
+)
+
 type fallingWord struct {
 	word   string
-	x      int     // column position (left edge)
-	y      float64 // row position (fractional for smooth movement)
-	typed  int     // how many leading characters have been matched
-	active bool    // true if this is the user's current target
+	x      int     // column of the word text (not the wings)
+	y      float64 // row of the body (head is at y-1)
+	typed  int
+	active bool
 }
 
-// fallingTickMsg is our custom message for the animation loop.
-// In bubbletea, you define your own message types as simple types.
-// The Update function matches on them with a type switch.
+// totalWidth returns the full width of this alien including wings.
+func (fw fallingWord) totalWidth() int {
+	return wingWidth + len(fw.word) + wingWidth
+}
+
+// leftEdge returns the leftmost column this alien occupies.
+func (fw fallingWord) leftEdge() int {
+	return fw.x - wingWidth
+}
+
+// rightEdge returns one past the rightmost column (exclusive).
+func (fw fallingWord) rightEdge() int {
+	return fw.x + len(fw.word) + wingWidth
+}
+
+type explosion struct {
+	x     int
+	y     int
+	ticks int
+}
+
+type laserBeam struct {
+	x     int
+	fromY int
+	toY   int
+	ticks int
+}
+
 type fallingTickMsg time.Time
 
-// fallingTickCmd returns a command that fires a fallingTickMsg after 150ms.
-// tea.Tick(duration, func) schedules a one-shot timer. The func wraps the
-// time.Time into our custom message type.
 func fallingTickCmd() tea.Cmd {
 	return tea.Tick(150*time.Millisecond, func(t time.Time) tea.Msg {
 		return fallingTickMsg(t)
 	})
 }
 
-// initFallingState resets all falling-mode state for a new game.
 func initFallingState(m model) model {
 	m.state = stateFalling
 	m.fallingWords = nil
@@ -57,11 +79,14 @@ func initFallingState(m model) model {
 	m.fallingLives = 3
 	m.fallingScore = 0
 	m.fallingSpeed = 0.3
-	m.fallingSpawnCD = 0 // spawn immediately
+	m.fallingSpawnCD = 0
 	m.fallingTicks = 0
 	m.fallingGameOver = false
 	m.fallingStartTime = time.Now()
 	m.fallingCharsTyped = 0
+	m.turretX = m.width / 2
+	m.explosions = nil
+	m.laser = nil
 	return m
 }
 
@@ -69,13 +94,20 @@ func updateFalling(m model, msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case fallingTickMsg:
 		if m.fallingGameOver {
-			return m, nil // stop ticking
+			return m, nil
 		}
+		livesBefore := m.fallingLives
 		m = fallingTick(m)
-		if m.fallingGameOver {
-			return m, nil // just became game over
+		var cmds []tea.Cmd
+		if m.fallingLives < livesBefore {
+			cmds = append(cmds, playSound(soundHit))
 		}
-		return m, fallingTickCmd() // schedule next tick
+		if m.fallingGameOver {
+			cmds = append(cmds, playSound(soundGameOver))
+			return m, tea.Batch(cmds...)
+		}
+		cmds = append(cmds, fallingTickCmd())
+		return m, tea.Batch(cmds...)
 
 	case tea.KeyMsg:
 		if m.fallingGameOver {
@@ -87,22 +119,36 @@ func updateFalling(m model, msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// fallingTick runs every 150ms: move words, check bottom, spawn, scale difficulty.
 func fallingTick(m model) model {
 	m.fallingTicks++
 
-	// Move all words down
 	for i := range m.fallingWords {
 		m.fallingWords[i].y += m.fallingSpeed
 	}
 
-	// Check for words hitting the bottom
-	playHeight := m.height - 5
+	// Tick down explosions
+	var activeExplosions []explosion
+	for _, e := range m.explosions {
+		e.ticks--
+		if e.ticks > 0 {
+			activeExplosions = append(activeExplosions, e)
+		}
+	}
+	m.explosions = activeExplosions
+
+	if m.laser != nil {
+		m.laser.ticks--
+		if m.laser.ticks <= 0 {
+			m.laser = nil
+		}
+	}
+
+	// Check for words hitting the shield
+	playHeight := m.height - 6
 	if playHeight < 5 {
 		playHeight = 5
 	}
 
-	// Collect surviving words (can't remove from slice while iterating)
 	var survived []fallingWord
 	targetWord := ""
 	if m.fallingTarget >= 0 && m.fallingTarget < len(m.fallingWords) {
@@ -111,10 +157,8 @@ func fallingTick(m model) model {
 
 	for _, fw := range m.fallingWords {
 		if int(fw.y) >= playHeight {
-			// This word hit the bottom
 			m.fallingLives--
 			if fw.active {
-				// Lost our target
 				m.fallingInput = nil
 				targetWord = ""
 			}
@@ -130,7 +174,6 @@ func fallingTick(m model) model {
 	}
 	m.fallingWords = survived
 
-	// Re-find target index after slice rebuild
 	m.fallingTarget = -1
 	if targetWord != "" {
 		for i, fw := range m.fallingWords {
@@ -140,22 +183,42 @@ func fallingTick(m model) model {
 			}
 		}
 		if m.fallingTarget == -1 {
-			// Target was lost (hit bottom)
 			m.fallingInput = nil
 		}
 	}
 
-	// Spawn new words
 	m.fallingSpawnCD--
 	if m.fallingSpawnCD <= 0 {
 		m = spawnFallingWord(m)
 		m.fallingSpawnCD = fallingSpawnInterval(m.fallingTicks)
 	}
 
-	// Scale difficulty
 	m.fallingSpeed = fallingSpeedForTick(m.fallingTicks)
 
 	return m
+}
+
+// overlapsExisting checks if a new word at position x would overlap
+// with any existing word that's still near the top of the screen.
+// Accounts for the full 2-row alien width (wings included).
+func overlapsExisting(m model, word string, x int) bool {
+	newLeft := x - wingWidth
+	newRight := x + len(word) + wingWidth
+
+	for _, fw := range m.fallingWords {
+		// Only check words near the top (within 3 rows of spawn point)
+		if fw.y > 3 {
+			continue
+		}
+		existLeft := fw.leftEdge()
+		existRight := fw.rightEdge()
+
+		// Check X overlap with 1 char gap
+		if newLeft < existRight+1 && newRight > existLeft-1 {
+			return true
+		}
+	}
+	return false
 }
 
 func spawnFallingWord(m model) model {
@@ -167,11 +230,28 @@ func spawnFallingWord(m model) model {
 		word = commonWords[rand.Intn(len(commonWords))]
 	}
 
-	maxX := m.width - len(word) - 2
-	if maxX < 1 {
-		maxX = 1
+	minX := edgePadding
+	maxX := m.width - len(word) - edgePadding
+	if maxX <= minX {
+		maxX = minX + 1
 	}
-	x := rand.Intn(maxX) + 1
+
+	// Try up to 10 random positions to find one that doesn't overlap
+	var x int
+	placed := false
+	for attempt := 0; attempt < 10; attempt++ {
+		x = rand.Intn(maxX-minX) + minX
+		if !overlapsExisting(m, word, x) {
+			placed = true
+			break
+		}
+	}
+
+	if !placed {
+		// All positions overlap — skip this spawn, try next tick
+		m.fallingSpawnCD = 3
+		return m
+	}
 
 	m.fallingWords = append(m.fallingWords, fallingWord{
 		word: word,
@@ -197,7 +277,6 @@ func handleFallingKey(m model, msg tea.KeyMsg) (model, tea.Cmd) {
 			if m.fallingTarget >= 0 && m.fallingTarget < len(m.fallingWords) {
 				m.fallingWords[m.fallingTarget].typed = len(m.fallingInput)
 			}
-			// If input is now empty, release the target
 			if len(m.fallingInput) == 0 && m.fallingTarget >= 0 && m.fallingTarget < len(m.fallingWords) {
 				m.fallingWords[m.fallingTarget].active = false
 				m.fallingWords[m.fallingTarget].typed = 0
@@ -207,7 +286,6 @@ func handleFallingKey(m model, msg tea.KeyMsg) (model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeySpace:
-		// Ignore space in falling mode (words don't have spaces)
 		return m, nil
 
 	case tea.KeyRunes:
@@ -215,26 +293,58 @@ func handleFallingKey(m model, msg tea.KeyMsg) (model, tea.Cmd) {
 		m.fallingInput = append(m.fallingInput, char)
 
 		if m.fallingTarget == -1 {
-			// No target — find one by first character
 			m.fallingTarget = findTarget(m, char)
 			if m.fallingTarget >= 0 {
 				m.fallingWords[m.fallingTarget].active = true
 				m.fallingWords[m.fallingTarget].typed = 1
+				m.turretStartX = m.turretX // remember where turret was
 			}
 		} else if m.fallingTarget < len(m.fallingWords) {
 			m.fallingWords[m.fallingTarget].typed = len(m.fallingInput)
 		}
 
-		// Check if the word is complete
+		// Move turret proportionally — each keypress covers an equal fraction
+		// of the distance from where the turret started to the target center.
+		if m.fallingTarget >= 0 && m.fallingTarget < len(m.fallingWords) {
+			fw := m.fallingWords[m.fallingTarget]
+			targetX := fw.x + len(fw.word)/2
+			wordLen := len([]rune(fw.word))
+			if wordLen > 0 {
+				progress := float64(len(m.fallingInput)) / float64(wordLen)
+				m.turretX = m.turretStartX + int(progress*float64(targetX-m.turretStartX))
+			}
+		}
+
 		if m.fallingTarget >= 0 && m.fallingTarget < len(m.fallingWords) {
 			fw := m.fallingWords[m.fallingTarget]
 			if string(m.fallingInput) == fw.word {
-				// Word destroyed!
+				wordCenterX := fw.x + len(fw.word)/2
+				wordRow := int(fw.y)
+
+				playHeight := m.height - 6
+				if playHeight < 5 {
+					playHeight = 5
+				}
+
+				m.laser = &laserBeam{
+					x:     wordCenterX,
+					fromY: playHeight,
+					toY:   wordRow - 1, // laser reaches the head row
+					ticks: laserDuration,
+				}
+				m.explosions = append(m.explosions, explosion{
+					x:     wordCenterX,
+					y:     wordRow,
+					ticks: explodeDuration,
+				})
+
+				m.turretX = wordCenterX
 				m.fallingScore++
 				m.fallingCharsTyped += len(fw.word)
 				m.fallingWords = append(m.fallingWords[:m.fallingTarget], m.fallingWords[m.fallingTarget+1:]...)
 				m.fallingTarget = -1
 				m.fallingInput = nil
+				return m, playRandomDestroy()
 			}
 		}
 
@@ -244,7 +354,6 @@ func handleFallingKey(m model, msg tea.KeyMsg) (model, tea.Cmd) {
 	return m, nil
 }
 
-// findTarget finds the lowest (highest Y) word whose first character matches.
 func findTarget(m model, firstChar rune) int {
 	bestIdx := -1
 	bestY := -1.0
@@ -279,8 +388,6 @@ func calculateFallingResults(m model) model {
 	if elapsed < 1 {
 		elapsed = 1
 	}
-	minutes := elapsed / 60.0
-	m.finalWPM = (float64(m.fallingCharsTyped) / 5.0) / minutes
 	m.correctWords = m.fallingScore
 	return m
 }
@@ -289,7 +396,7 @@ func calculateFallingResults(m model) model {
 
 func fallingSpeedForTick(ticks int) float64 {
 	base := 0.3
-	increments := float64(ticks / 67) // every ~10 seconds
+	increments := float64(ticks / 67)
 	speed := base + increments*0.05
 	if speed > 1.5 {
 		speed = 1.5
@@ -307,10 +414,132 @@ func fallingSpawnInterval(ticks int) int {
 	return interval
 }
 
+// --- 2-Row Alien Sprites ---
+//
+// Each alien has a head row and a body row.
+// Head:  ╱‾‾‾╲   (width matches body)
+// Body:  >{the}<  (wings + word)
+//
+// The head is dynamically generated to match the word's total width.
+
+type alienSprite struct {
+	bodyLeft  string // left wing on body row
+	bodyRight string // right wing on body row
+	headLeft  string // left frame of head (includes eye)
+	headFill  rune   // character repeated between eyes
+	headRight string // right frame of head (includes eye)
+}
+
+// 4 alien designs — each has a distinct silhouette.
+// The head row stretches to match the word width.
+// Head caps are 2 chars each (matching wing width), so fill = word length.
+var alienSprites = []alienSprite{
+	// Classic invader — ridge with peeking eyes
+	{">{", "}<", "╱◉", '‾', "◉╲"},
+	// Antenna bug — antennae with big eyes
+	{"◀[", "]▶", "¤◉", '─', "◉¤"},
+	// Jellyfish — wavy with round eyes
+	{"({", "})", "~◎", '~', "◎~"},
+	// Robot — boxy with diamond eyes
+	{"╞{", "}╡", "[◈", '·', "◈]"},
+}
+
+func spriteForWord(word string) int {
+	if len(word) == 0 {
+		return 0
+	}
+	return int(word[0]) % len(alienSprites)
+}
+
+// buildHead generates the head row string for a given word and sprite.
+// It matches the total width of the body row (wings + word).
+func buildHead(word string, sprite alienSprite) string {
+	// Body width: len(bodyLeft) + len(word) + len(bodyRight)
+	// Head width: len(headLeft) + fill + len(headRight) should equal body width
+	bodyWidth := len([]rune(sprite.bodyLeft)) + len([]rune(word)) + len([]rune(sprite.bodyRight))
+	headCapWidth := len([]rune(sprite.headLeft)) + len([]rune(sprite.headRight))
+	fillCount := bodyWidth - headCapWidth
+	if fillCount < 0 {
+		fillCount = 0
+	}
+	return sprite.headLeft + strings.Repeat(string(sprite.headFill), fillCount) + sprite.headRight
+}
+
 // --- Rendering ---
 
+func renderShield(width int, lives int, turretX int) string {
+	if width < 4 {
+		width = 4
+	}
+
+	var shield []rune
+	switch lives {
+	case 3:
+		shield = []rune(strings.Repeat("█", width))
+	case 2:
+		shield = []rune(strings.Repeat("█", width))
+		for _, pos := range []int{width / 4, width / 2, width * 3 / 4} {
+			if pos < len(shield) {
+				shield[pos] = '░'
+			}
+		}
+	case 1:
+		shield = make([]rune, width)
+		for i := range shield {
+			if i%3 == 0 {
+				shield[i] = '░'
+			} else if i%5 == 0 {
+				shield[i] = ' '
+			} else {
+				shield[i] = '▒'
+			}
+		}
+	default:
+		shield = make([]rune, width)
+		for i := range shield {
+			if i%2 == 0 {
+				shield[i] = '░'
+			} else {
+				shield[i] = ' '
+			}
+		}
+	}
+
+	turretPos := turretX
+	if turretPos < 1 {
+		turretPos = 1
+	}
+	if turretPos >= width-1 {
+		turretPos = width - 2
+	}
+	if turretPos-1 >= 0 && turretPos-1 < len(shield) {
+		shield[turretPos-1] = '/'
+	}
+	if turretPos < len(shield) {
+		shield[turretPos] = '▲'
+	}
+	if turretPos+1 < len(shield) {
+		shield[turretPos+1] = '\\'
+	}
+
+	var result strings.Builder
+	for i, ch := range shield {
+		s := string(ch)
+		if i >= turretPos-1 && i <= turretPos+1 {
+			result.WriteString(styleShield.Render(s))
+		} else if lives >= 2 {
+			result.WriteString(styleShield.Render(s))
+		} else if lives == 1 {
+			result.WriteString(styleShieldDamaged.Render(s))
+		} else {
+			result.WriteString(styleHint.Render(s))
+		}
+	}
+	return result.String()
+}
+
 func viewFalling(m model) string {
-	playHeight := m.height - 5
+	playHeight := m.height - 6
 	if playHeight < 5 {
 		playHeight = 5
 	}
@@ -319,7 +548,7 @@ func viewFalling(m model) string {
 		playWidth = 20
 	}
 
-	// Build a 2D grid of styled characters
+	// Build 2D grid
 	grid := make([][]string, playHeight)
 	for row := range grid {
 		grid[row] = make([]string, playWidth)
@@ -328,38 +557,100 @@ func viewFalling(m model) string {
 		}
 	}
 
-	// Place each falling word on the grid
-	for _, fw := range m.fallingWords {
-		row := int(fw.y)
-		if row < 0 || row >= playHeight {
-			continue
-		}
-		for j, ch := range []rune(fw.word) {
-			col := fw.x + j
-			if col < 0 || col >= playWidth {
-				continue
-			}
-			if fw.active && j < fw.typed {
-				// Already typed portion — correct color
-				grid[row][col] = styleCorrect.Render(string(ch))
-			} else if fw.active {
-				// Remaining portion of targeted word — highlighted
-				grid[row][col] = styleCursor.Render(string(ch))
-			} else {
-				// Normal untargeted word
-				grid[row][col] = styleUntyped.Render(string(ch))
+	// Draw laser beam
+	if m.laser != nil {
+		col := m.laser.x
+		if col >= 0 && col < playWidth {
+			for row := m.laser.toY; row < m.laser.fromY && row < playHeight; row++ {
+				if row >= 0 {
+					grid[row][col] = styleLaser.Render("│")
+				}
 			}
 		}
 	}
 
-	// Render grid to lines
+	// Draw explosions
+	for _, e := range m.explosions {
+		phase := explodeDuration - e.ticks
+		particles := explosionParticles(phase)
+		for _, p := range particles {
+			px := e.x + p.dx
+			py := e.y + p.dy
+			if py >= 0 && py < playHeight && px >= 0 && px < playWidth {
+				grid[py][px] = styleExplosion.Render(p.ch)
+			}
+		}
+	}
+
+	// Place 2-row alien sprites
+	for _, fw := range m.fallingWords {
+		bodyRow := int(fw.y)
+		headRow := bodyRow - 1
+		sprite := alienSprites[spriteForWord(fw.word)]
+		headStr := buildHead(fw.word, sprite)
+		headRunes := []rune(headStr)
+
+		alienStyle := styleAlien
+		if fw.active {
+			alienStyle = styleAlienActive
+		}
+
+		// --- Head row ---
+		if headRow >= 0 && headRow < playHeight {
+			for i, ch := range headRunes {
+				col := fw.x - wingWidth + i
+				if col >= 0 && col < playWidth {
+					grid[headRow][col] = alienStyle.Render(string(ch))
+				}
+			}
+		}
+
+		// --- Body row ---
+		if bodyRow >= 0 && bodyRow < playHeight {
+			// Left wing
+			bodyLeftRunes := []rune(sprite.bodyLeft)
+			for i, ch := range bodyLeftRunes {
+				col := fw.x - len(bodyLeftRunes) + i
+				if col >= 0 && col < playWidth {
+					grid[bodyRow][col] = alienStyle.Render(string(ch))
+				}
+			}
+
+			// Word text
+			for j, ch := range []rune(fw.word) {
+				col := fw.x + j
+				if col < 0 || col >= playWidth {
+					continue
+				}
+				if fw.active && j < fw.typed {
+					grid[bodyRow][col] = styleCorrect.Render(string(ch))
+				} else if fw.active {
+					grid[bodyRow][col] = styleCursor.Render(string(ch))
+				} else {
+					grid[bodyRow][col] = styleUntyped.Render(string(ch))
+				}
+			}
+
+			// Right wing
+			bodyRightRunes := []rune(sprite.bodyRight)
+			for i, ch := range bodyRightRunes {
+				col := fw.x + len([]rune(fw.word)) + i
+				if col >= 0 && col < playWidth {
+					grid[bodyRow][col] = alienStyle.Render(string(ch))
+				}
+			}
+		}
+	}
+
+	// Render grid
 	var lines []string
 	for _, row := range grid {
 		lines = append(lines, strings.Join(row, ""))
 	}
 	playField := strings.Join(lines, "\n")
 
-	// Status bar: lives, score, time
+	shield := renderShield(playWidth, m.fallingLives, m.turretX)
+
 	hearts := styleLife.Render(strings.Repeat("♥ ", m.fallingLives))
 	if m.fallingLives == 0 {
 		hearts = styleHint.Render("♥ ♥ ♥")
@@ -369,10 +660,6 @@ func viewFalling(m model) string {
 	timeText := styleStatLabel.Render("time ") + styleStatValue.Render(fmt.Sprintf("%.0fs", elapsed))
 	statusBar := hearts + "  " + scoreText + "  " + timeText
 
-	// Separator line
-	separator := styleHint.Render(strings.Repeat("─", playWidth))
-
-	// Input line
 	inputStr := string(m.fallingInput)
 	inputDisplay := styleHighlight.Render("> ") + styleCorrect.Render(inputStr) + styleCursor.Render("_")
 
@@ -385,14 +672,46 @@ func viewFalling(m model) string {
 	return lipgloss.JoinVertical(lipgloss.Left,
 		statusBar,
 		playField,
-		separator,
+		shield,
 		inputDisplay,
 		hint,
 	)
 }
 
+type particle struct {
+	dx, dy int
+	ch     string
+}
+
+func explosionParticles(phase int) []particle {
+	switch phase {
+	case 0:
+		return []particle{
+			{0, 0, "✦"},
+		}
+	case 1:
+		return []particle{
+			{0, 0, "◇"},
+			{-1, 0, "✧"}, {1, 0, "✧"},
+			{0, -1, "·"},
+		}
+	case 2:
+		return []particle{
+			{-2, 0, "·"}, {2, 0, "·"},
+			{-1, -1, "✧"}, {1, -1, "✧"},
+			{-1, 1, "*"}, {1, 1, "*"},
+			{0, 0, " "},
+		}
+	default:
+		return []particle{
+			{-3, 0, "."}, {3, 0, "."},
+			{-2, -1, "."}, {2, -1, "."},
+			{0, 0, " "},
+		}
+	}
+}
+
 func viewFallingGameOver(m model) string {
-	// Center the game over screen
 	gameOver := styleLife.Render("GAME OVER")
 
 	scoreNum := styleBigWPM.Render(fmt.Sprintf("%d", m.fallingScore))
@@ -400,7 +719,6 @@ func viewFallingGameOver(m model) string {
 
 	elapsed := time.Since(m.fallingStartTime).Seconds()
 	timeStat := styleStatLabel.Render("survived     ") + styleStatValue.Render(fmt.Sprintf("%.0fs", elapsed))
-	wpmStat := styleStatLabel.Render("wpm          ") + styleStatValue.Render(fmt.Sprintf("%.0f", m.finalWPM))
 
 	hint := styleHint.Render("tab/enter restart  esc menu")
 
@@ -410,7 +728,6 @@ func viewFallingGameOver(m model) string {
 		scoreNum+scoreLabel,
 		"",
 		timeStat,
-		wpmStat,
 		"",
 		hint,
 	)

@@ -64,17 +64,23 @@ type model struct {
 	totalWords    int
 
 	// Falling words mode
-	fallingWords     []fallingWord // active words on screen
-	fallingInput     []rune        // what the user is currently typing
-	fallingTarget    int           // index of targeted word, or -1
-	fallingLives     int           // starts at 3, game over at 0
-	fallingScore     int           // words destroyed
-	fallingSpeed     float64       // rows per tick (increases over time)
-	fallingSpawnCD   int           // ticks until next word spawns
-	fallingTicks     int           // total ticks elapsed
-	fallingStartTime time.Time     // for "time survived"
+	fallingWords     []fallingWord  // active words on screen
+	fallingInput     []rune         // what the user is currently typing
+	fallingTarget    int            // index of targeted word, or -1
+	fallingLives     int            // starts at 3, game over at 0
+	fallingScore     int            // words destroyed
+	fallingSpeed     float64        // rows per tick (increases over time)
+	fallingSpawnCD   int            // ticks until next word spawns
+	fallingTicks     int            // total ticks elapsed
+	fallingStartTime time.Time      // for "time survived"
 	fallingGameOver  bool
-	fallingCharsTyped int          // total chars in destroyed words (for WPM)
+	fallingCharsTyped int           // total chars in destroyed words (for WPM)
+
+	// Turret + effects
+	turretX      int           // current X position of the turret
+	turretStartX int           // turret X when target was acquired (for interpolation)
+	explosions   []explosion   // active explosion animations
+	laser        *laserBeam    // active laser beam (nil if none)
 }
 
 var durations = []time.Duration{
