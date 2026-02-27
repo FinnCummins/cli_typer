@@ -1,4 +1,4 @@
-module fun_cli
+module cli_typer
 
 go 1.25.0
 

@@ -55,7 +55,7 @@ func updateMenu(m model, msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.duration = cycleDuration(m.duration, 1)
 		}
 	case "enter":
-		// TODO: transition to typing state (step 4)
+		m = initTypingState(m)
 		return m, nil
 	case "q":
 		return m, tea.Quit
@@ -65,7 +65,7 @@ func updateMenu(m model, msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func viewMenu(m model) string {
-	title := styleTitle.Render("fun_cli")
+	title := styleTitle.Render("cli_typer")
 
 	// Mode row
 	modeLabel := styleStatLabel.Render("mode      ")
