@@ -43,6 +43,7 @@ type model struct {
 	gameMode    gameMode
 	contentMode contentMode
 	duration    time.Duration
+	dayCycle    bool // day/night cycle (falling mode only)
 
 	// Classic typing test
 	words     []string

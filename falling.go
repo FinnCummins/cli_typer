@@ -467,7 +467,7 @@ func buildHead(word string, sprite alienSprite) string {
 
 // --- Rendering ---
 
-func renderShield(width int, lives int, turretX int) string {
+func renderShieldWithStyle(width int, lives int, turretX int, sShield, sShieldDmg, sHint lipgloss.Style) string {
 	if width < 4 {
 		width = 4
 	}
@@ -526,13 +526,13 @@ func renderShield(width int, lives int, turretX int) string {
 	for i, ch := range shield {
 		s := string(ch)
 		if i >= turretPos-1 && i <= turretPos+1 {
-			result.WriteString(styleShield.Render(s))
+			result.WriteString(sShield.Render(s))
 		} else if lives >= 2 {
-			result.WriteString(styleShield.Render(s))
+			result.WriteString(sShield.Render(s))
 		} else if lives == 1 {
-			result.WriteString(styleShieldDamaged.Render(s))
+			result.WriteString(sShieldDmg.Render(s))
 		} else {
-			result.WriteString(styleHint.Render(s))
+			result.WriteString(sHint.Render(s))
 		}
 	}
 	return result.String()
@@ -548,6 +548,33 @@ func viewFalling(m model) string {
 		playWidth = 20
 	}
 
+	// Compute styles — either dynamic (cycle) or static (default)
+	sUntyped := styleUntyped
+	sAlien := styleAlien
+	sAlienActive := styleAlienActive
+	sShield := styleShield
+	sShieldDmg := styleShieldDamaged
+	sHint := styleHint
+	sStatLabel := styleStatLabel
+	sStatValue := styleStatValue
+	sHighlight := styleHighlight
+	hasCycle := m.dayCycle
+	var cycleBg lipgloss.Color
+
+	if hasCycle {
+		pal := cycleColors(m.fallingTicks)
+		cycleBg = pal.bg
+		sUntyped = lipgloss.NewStyle().Foreground(pal.dim)
+		sAlien = lipgloss.NewStyle().Foreground(pal.alien)
+		sAlienActive = lipgloss.NewStyle().Foreground(pal.accent).Bold(true)
+		sShield = lipgloss.NewStyle().Foreground(pal.shield).Bold(true)
+		sShieldDmg = lipgloss.NewStyle().Foreground(pal.dim)
+		sHint = lipgloss.NewStyle().Foreground(pal.hint)
+		sStatLabel = lipgloss.NewStyle().Foreground(pal.hint)
+		sStatValue = lipgloss.NewStyle().Foreground(pal.accent).Bold(true)
+		sHighlight = lipgloss.NewStyle().Foreground(pal.accent)
+	}
+
 	// Build 2D grid
 	grid := make([][]string, playHeight)
 	for row := range grid {
@@ -555,6 +582,12 @@ func viewFalling(m model) string {
 		for col := range grid[row] {
 			grid[row][col] = " "
 		}
+	}
+
+	// Draw celestial body (sun or moon) as a multi-char sprite
+	if m.dayCycle {
+		body := getCelestialBody(m.fallingTicks, playWidth, playHeight)
+		renderCelestialOnGrid(grid, body, playWidth, playHeight)
 	}
 
 	// Draw laser beam
@@ -590,9 +623,9 @@ func viewFalling(m model) string {
 		headStr := buildHead(fw.word, sprite)
 		headRunes := []rune(headStr)
 
-		alienStyle := styleAlien
+		aStyle := sAlien
 		if fw.active {
-			alienStyle = styleAlienActive
+			aStyle = sAlienActive
 		}
 
 		// --- Head row ---
@@ -600,23 +633,21 @@ func viewFalling(m model) string {
 			for i, ch := range headRunes {
 				col := fw.x - wingWidth + i
 				if col >= 0 && col < playWidth {
-					grid[headRow][col] = alienStyle.Render(string(ch))
+					grid[headRow][col] = aStyle.Render(string(ch))
 				}
 			}
 		}
 
 		// --- Body row ---
 		if bodyRow >= 0 && bodyRow < playHeight {
-			// Left wing
 			bodyLeftRunes := []rune(sprite.bodyLeft)
 			for i, ch := range bodyLeftRunes {
 				col := fw.x - len(bodyLeftRunes) + i
 				if col >= 0 && col < playWidth {
-					grid[bodyRow][col] = alienStyle.Render(string(ch))
+					grid[bodyRow][col] = aStyle.Render(string(ch))
 				}
 			}
 
-			// Word text
 			for j, ch := range []rune(fw.word) {
 				col := fw.x + j
 				if col < 0 || col >= playWidth {
@@ -627,16 +658,15 @@ func viewFalling(m model) string {
 				} else if fw.active {
 					grid[bodyRow][col] = styleCursor.Render(string(ch))
 				} else {
-					grid[bodyRow][col] = styleUntyped.Render(string(ch))
+					grid[bodyRow][col] = sUntyped.Render(string(ch))
 				}
 			}
 
-			// Right wing
 			bodyRightRunes := []rune(sprite.bodyRight)
 			for i, ch := range bodyRightRunes {
 				col := fw.x + len([]rune(fw.word)) + i
 				if col >= 0 && col < playWidth {
-					grid[bodyRow][col] = alienStyle.Render(string(ch))
+					grid[bodyRow][col] = aStyle.Render(string(ch))
 				}
 			}
 		}
@@ -649,33 +679,47 @@ func viewFalling(m model) string {
 	}
 	playField := strings.Join(lines, "\n")
 
-	shield := renderShield(playWidth, m.fallingLives, m.turretX)
+	// Shield with dynamic colors
+	shield := renderShieldWithStyle(playWidth, m.fallingLives, m.turretX, sShield, sShieldDmg, sHint)
 
 	hearts := styleLife.Render(strings.Repeat("♥ ", m.fallingLives))
 	if m.fallingLives == 0 {
-		hearts = styleHint.Render("♥ ♥ ♥")
+		hearts = sHint.Render("♥ ♥ ♥")
 	}
-	scoreText := styleStatLabel.Render("score ") + styleStatValue.Render(fmt.Sprintf("%d", m.fallingScore))
+	scoreText := sStatLabel.Render("score ") + sStatValue.Render(fmt.Sprintf("%d", m.fallingScore))
 	elapsed := time.Since(m.fallingStartTime).Seconds()
-	timeText := styleStatLabel.Render("time ") + styleStatValue.Render(fmt.Sprintf("%.0fs", elapsed))
+	timeText := sStatLabel.Render("time ") + sStatValue.Render(fmt.Sprintf("%.0fs", elapsed))
 	statusBar := hearts + "  " + scoreText + "  " + timeText
 
 	inputStr := string(m.fallingInput)
-	inputDisplay := styleHighlight.Render("> ") + styleCorrect.Render(inputStr) + styleCursor.Render("_")
+	inputDisplay := sHighlight.Render("> ") + styleCorrect.Render(inputStr) + styleCursor.Render("_")
 
-	hint := styleHint.Render("tab restart  esc menu")
+	hint := sHint.Render("tab restart  esc menu")
 
 	if m.fallingGameOver {
 		return viewFallingGameOver(m)
 	}
 
-	return lipgloss.JoinVertical(lipgloss.Left,
+	content := lipgloss.JoinVertical(lipgloss.Left,
 		statusBar,
 		playField,
 		shield,
 		inputDisplay,
 		hint,
 	)
+
+	// For day/night cycle: fill the entire terminal with the background color
+	// using lipgloss.Place with WhitespaceBackground. This fills ALL empty
+	// space (including margins and padding) with the cycle bg color.
+	if hasCycle {
+		return lipgloss.Place(m.width, m.height,
+			lipgloss.Left, lipgloss.Top,
+			content,
+			lipgloss.WithWhitespaceBackground(cycleBg),
+		)
+	}
+
+	return content
 }
 
 type particle struct {

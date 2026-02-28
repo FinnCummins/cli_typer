@@ -7,10 +7,10 @@ package main
 //   Row 1: content    — words / quotes
 //   Row 2: duration   — 15s / 30s / 60s
 //
-// Falling mode (2 rows):
+// Falling mode (3 rows):
 //   Row 0: game mode  — classic / falling
 //   Row 1: content    — words / quotes
-//   (no duration row — falling mode ends when you lose all lives)
+//   Row 2: cycle      — off / on
 
 import (
 	"fmt"
@@ -26,10 +26,7 @@ func updateMenu(m model, msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	maxRow := 2
-	if m.gameMode == gameModeFalling {
-		maxRow = 1
-	}
+	maxRow := 2 // both modes have 3 rows now
 
 	switch keyMsg.String() {
 	case "up", "k":
@@ -62,9 +59,6 @@ func updateMenu(m model, msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// handleMenuLeft processes left arrow on the current menu row.
-// We use a pointer here so mutations are visible to the caller.
-// (An alternative Go pattern — sometimes simpler than returning the model.)
 func handleMenuLeft(m *model) {
 	switch m.menuRow {
 	case 0: // game mode
@@ -73,22 +67,18 @@ func handleMenuLeft(m *model) {
 		} else {
 			m.gameMode = gameModeClassic
 		}
-		// Clamp menuRow if we switched to a mode with fewer rows
-		maxRow := 2
-		if m.gameMode == gameModeFalling {
-			maxRow = 1
-		}
-		if m.menuRow > maxRow {
-			m.menuRow = maxRow
-		}
 	case 1: // content mode
 		if m.contentMode == modeWords {
 			m.contentMode = modeQuotes
 		} else {
 			m.contentMode = modeWords
 		}
-	case 2: // duration (classic only)
-		m.duration = cycleDuration(m.duration, -1)
+	case 2: // duration (classic) or cycle (falling)
+		if m.gameMode == gameModeClassic {
+			m.duration = cycleDuration(m.duration, -1)
+		} else {
+			m.dayCycle = !m.dayCycle
+		}
 	}
 }
 
@@ -100,13 +90,6 @@ func handleMenuRight(m *model) {
 		} else {
 			m.gameMode = gameModeClassic
 		}
-		maxRow := 2
-		if m.gameMode == gameModeFalling {
-			maxRow = 1
-		}
-		if m.menuRow > maxRow {
-			m.menuRow = maxRow
-		}
 	case 1:
 		if m.contentMode == modeWords {
 			m.contentMode = modeQuotes
@@ -114,7 +97,11 @@ func handleMenuRight(m *model) {
 			m.contentMode = modeWords
 		}
 	case 2:
-		m.duration = cycleDuration(m.duration, 1)
+		if m.gameMode == gameModeClassic {
+			m.duration = cycleDuration(m.duration, 1)
+		} else {
+			m.dayCycle = !m.dayCycle
+		}
 	}
 }
 
@@ -148,7 +135,7 @@ func viewMenu(m model) string {
 	// Build the list of rows
 	rows := []string{gameModeRow, modeRow}
 
-	// Row 2: Duration (classic mode only)
+	// Row 2: depends on game mode
 	if m.gameMode == gameModeClassic {
 		durLabel := styleStatLabel.Render("duration  ")
 		var durParts []string
@@ -165,6 +152,18 @@ func viewMenu(m model) string {
 			durRow += p + " "
 		}
 		rows = append(rows, durRow)
+	} else {
+		cycleLabel := styleStatLabel.Render("cycle     ")
+		var offText, onText string
+		if m.dayCycle {
+			offText = styleUntyped.Render("  off  ")
+			onText = styleHighlight.Render("[ on ]")
+		} else {
+			offText = styleHighlight.Render("[ off ]")
+			onText = styleUntyped.Render("  on  ")
+		}
+		cycleRow := cycleLabel + offText + "  " + onText
+		rows = append(rows, cycleRow)
 	}
 
 	// Add arrow indicator for selected row
