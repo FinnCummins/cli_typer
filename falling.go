@@ -1,9 +1,13 @@
 package main
 
-// Falling words game mode with 2-row alien sprites:
+// Falling words game mode with multi-row ASCII art aliens:
 //
-//   ╱‾‾‾╲      <- head row (y-1)
-//   >{the}<    <- body row (y, where the word text lives)
+//   Small:       Medium:       Large:          XLarge:
+//     .-.          ___           ._.              \_/
+//    (o o)       (o o)         (o o)            (o o)
+//    |the|       |quick|     /|afternoon|\    <|accomplishment|>
+//    /| |\        /| |\       / | \              / | | \
+//                 /   \      /  |  \              /   \
 //
 // - Turret on the shield slides to track the targeted word
 // - Laser beam + explosion on word destroy
@@ -20,34 +24,18 @@ import (
 )
 
 const (
-	edgePadding     = 7
+	edgePadding     = 3
 	turretSpeed     = 3
 	laserDuration   = 3
 	explodeDuration = 4
-	wingWidth       = 2 // characters per wing on each side
 )
 
 type fallingWord struct {
 	word   string
-	x      int     // column of the word text (not the wings)
-	y      float64 // row of the body (head is at y-1)
+	x      int     // left edge of the alien art
+	y      float64 // row of the WORD LINE (always row index 2 of the alien)
 	typed  int
 	active bool
-}
-
-// totalWidth returns the full width of this alien including wings.
-func (fw fallingWord) totalWidth() int {
-	return wingWidth + len(fw.word) + wingWidth
-}
-
-// leftEdge returns the leftmost column this alien occupies.
-func (fw fallingWord) leftEdge() int {
-	return fw.x - wingWidth
-}
-
-// rightEdge returns one past the rightmost column (exclusive).
-func (fw fallingWord) rightEdge() int {
-	return fw.x + len(fw.word) + wingWidth
 }
 
 type explosion struct {
@@ -70,6 +58,80 @@ func fallingTickCmd() tea.Cmd {
 		return fallingTickMsg(t)
 	})
 }
+
+// --- Multi-row ASCII Art Alien Builder ---
+//
+// Each alien is built to exactly fit its word — no padding.
+// The body row is always " |word| " and the head/legs are centered
+// to match that width. Three visual styles based on word length:
+//
+// Short (1-3):    Medium (4-6):     Long (7+):
+//    .-.             ___               ._.
+//   (o o)          (o o)             (o o)
+//   |no|           |like|          |between|
+//   /| |\          /| |\            / | \
+//                  /   \           /  |  \
+
+type builtAlien struct {
+	lines   []string
+	wordRow int
+	wordCol int
+	wordLen int
+	width   int
+}
+
+func buildAlienArt(word string) builtAlien {
+	n := len(word)
+	bodyRow := " |" + word + "| "
+	totalWidth := len(bodyRow)
+
+	// center pads a string to totalWidth
+	center := func(s string) string {
+		pad := totalWidth - len(s)
+		if pad <= 0 {
+			return s
+		}
+		lp := pad / 2
+		rp := pad - lp
+		return strings.Repeat(" ", lp) + s + strings.Repeat(" ", rp)
+	}
+
+	var lines []string
+	if n <= 3 {
+		lines = []string{
+			center(".-."),
+			center("(o o)"),
+			bodyRow,
+			center(`/| |\`),
+		}
+	} else if n <= 6 {
+		lines = []string{
+			center("___"),
+			center("(o o)"),
+			bodyRow,
+			center(`/| |\`),
+			center(`/   \`),
+		}
+	} else {
+		lines = []string{
+			center("._."),
+			center("(o o)"),
+			bodyRow,
+			center(`/ | \`),
+			center(`/  |  \`),
+		}
+	}
+
+	return builtAlien{
+		lines:   lines,
+		wordRow: 2,
+		wordCol: 2, // " |" = 2 chars before word starts
+		wordLen: n,
+		width:   totalWidth,
+	}
+}
+
+// --- Game state management ---
 
 func initFallingState(m model) model {
 	m.state = stateFalling
@@ -198,22 +260,24 @@ func fallingTick(m model) model {
 	return m
 }
 
-// overlapsExisting checks if a new word at position x would overlap
-// with any existing word that's still near the top of the screen.
-// Accounts for the full 2-row alien width (wings included).
-func overlapsExisting(m model, word string, x int) bool {
-	newLeft := x - wingWidth
-	newRight := x + len(word) + wingWidth
+// wordCenter returns the screen column of the word's center for turret targeting.
+func wordCenter(fw fallingWord) int {
+	art := buildAlienArt(fw.word)
+	return fw.x + art.wordCol + art.wordLen/2
+}
+
+func overlapsExisting(m model, art builtAlien, x int) bool {
+	newLeft := x
+	newRight := x + art.width
 
 	for _, fw := range m.fallingWords {
-		// Only check words near the top (within 3 rows of spawn point)
-		if fw.y > 3 {
+		if fw.y > 5 {
 			continue
 		}
-		existLeft := fw.leftEdge()
-		existRight := fw.rightEdge()
+		existArt := buildAlienArt(fw.word)
+		existLeft := fw.x
+		existRight := fw.x + existArt.width
 
-		// Check X overlap with 1 char gap
 		if newLeft < existRight+1 && newRight > existLeft-1 {
 			return true
 		}
@@ -230,25 +294,24 @@ func spawnFallingWord(m model) model {
 		word = commonWords[rand.Intn(len(commonWords))]
 	}
 
+	art := buildAlienArt(word)
 	minX := edgePadding
-	maxX := m.width - len(word) - edgePadding
+	maxX := m.width - art.width - edgePadding
 	if maxX <= minX {
 		maxX = minX + 1
 	}
 
-	// Try up to 10 random positions to find one that doesn't overlap
 	var x int
 	placed := false
 	for attempt := 0; attempt < 10; attempt++ {
 		x = rand.Intn(maxX-minX) + minX
-		if !overlapsExisting(m, word, x) {
+		if !overlapsExisting(m, art, x) {
 			placed = true
 			break
 		}
 	}
 
 	if !placed {
-		// All positions overlap — skip this spawn, try next tick
 		m.fallingSpawnCD = 3
 		return m
 	}
@@ -297,17 +360,16 @@ func handleFallingKey(m model, msg tea.KeyMsg) (model, tea.Cmd) {
 			if m.fallingTarget >= 0 {
 				m.fallingWords[m.fallingTarget].active = true
 				m.fallingWords[m.fallingTarget].typed = 1
-				m.turretStartX = m.turretX // remember where turret was
+				m.turretStartX = m.turretX
 			}
 		} else if m.fallingTarget < len(m.fallingWords) {
 			m.fallingWords[m.fallingTarget].typed = len(m.fallingInput)
 		}
 
-		// Move turret proportionally — each keypress covers an equal fraction
-		// of the distance from where the turret started to the target center.
+		// Move turret proportionally toward target center
 		if m.fallingTarget >= 0 && m.fallingTarget < len(m.fallingWords) {
 			fw := m.fallingWords[m.fallingTarget]
-			targetX := fw.x + len(fw.word)/2
+			targetX := wordCenter(fw)
 			wordLen := len([]rune(fw.word))
 			if wordLen > 0 {
 				progress := float64(len(m.fallingInput)) / float64(wordLen)
@@ -318,8 +380,8 @@ func handleFallingKey(m model, msg tea.KeyMsg) (model, tea.Cmd) {
 		if m.fallingTarget >= 0 && m.fallingTarget < len(m.fallingWords) {
 			fw := m.fallingWords[m.fallingTarget]
 			if string(m.fallingInput) == fw.word {
-				wordCenterX := fw.x + len(fw.word)/2
-				wordRow := int(fw.y)
+				centerX := wordCenter(fw)
+				wordRowY := int(fw.y)
 
 				playHeight := m.height - 6
 				if playHeight < 5 {
@@ -327,18 +389,18 @@ func handleFallingKey(m model, msg tea.KeyMsg) (model, tea.Cmd) {
 				}
 
 				m.laser = &laserBeam{
-					x:     wordCenterX,
+					x:     centerX,
 					fromY: playHeight,
-					toY:   wordRow - 1, // laser reaches the head row
+					toY:   wordRowY - 2, // laser reaches the top of the alien
 					ticks: laserDuration,
 				}
 				m.explosions = append(m.explosions, explosion{
-					x:     wordCenterX,
-					y:     wordRow,
+					x:     centerX,
+					y:     wordRowY,
 					ticks: explodeDuration,
 				})
 
-				m.turretX = wordCenterX
+				m.turretX = centerX
 				m.fallingScore++
 				m.fallingCharsTyped += len(fw.word)
 				m.fallingWords = append(m.fallingWords[:m.fallingTarget], m.fallingWords[m.fallingTarget+1:]...)
@@ -412,57 +474,6 @@ func fallingSpawnInterval(ticks int) int {
 		interval = 7
 	}
 	return interval
-}
-
-// --- 2-Row Alien Sprites ---
-//
-// Each alien has a head row and a body row.
-// Head:  ╱‾‾‾╲   (width matches body)
-// Body:  >{the}<  (wings + word)
-//
-// The head is dynamically generated to match the word's total width.
-
-type alienSprite struct {
-	bodyLeft  string // left wing on body row
-	bodyRight string // right wing on body row
-	headLeft  string // left frame of head (includes eye)
-	headFill  rune   // character repeated between eyes
-	headRight string // right frame of head (includes eye)
-}
-
-// 4 alien designs — each has a distinct silhouette.
-// The head row stretches to match the word width.
-// Head caps are 2 chars each (matching wing width), so fill = word length.
-var alienSprites = []alienSprite{
-	// Classic invader — ridge with peeking eyes
-	{">{", "}<", "╱◉", '‾', "◉╲"},
-	// Antenna bug — antennae with big eyes
-	{"◀[", "]▶", "¤◉", '─', "◉¤"},
-	// Jellyfish — wavy with round eyes
-	{"({", "})", "~◎", '~', "◎~"},
-	// Robot — boxy with diamond eyes
-	{"╞{", "}╡", "[◈", '·', "◈]"},
-}
-
-func spriteForWord(word string) int {
-	if len(word) == 0 {
-		return 0
-	}
-	return int(word[0]) % len(alienSprites)
-}
-
-// buildHead generates the head row string for a given word and sprite.
-// It matches the total width of the body row (wings + word).
-func buildHead(word string, sprite alienSprite) string {
-	// Body width: len(bodyLeft) + len(word) + len(bodyRight)
-	// Head width: len(headLeft) + fill + len(headRight) should equal body width
-	bodyWidth := len([]rune(sprite.bodyLeft)) + len([]rune(word)) + len([]rune(sprite.bodyRight))
-	headCapWidth := len([]rune(sprite.headLeft)) + len([]rune(sprite.headRight))
-	fillCount := bodyWidth - headCapWidth
-	if fillCount < 0 {
-		fillCount = 0
-	}
-	return sprite.headLeft + strings.Repeat(string(sprite.headFill), fillCount) + sprite.headRight
 }
 
 // --- Rendering ---
@@ -584,7 +595,7 @@ func viewFalling(m model) string {
 		}
 	}
 
-	// Draw celestial body (sun or moon) as a multi-char sprite
+	// Draw celestial body (sun or moon)
 	if m.dayCycle {
 		body := getCelestialBody(m.fallingTicks, playWidth, playHeight)
 		renderCelestialOnGrid(grid, body, playWidth, playHeight)
@@ -615,58 +626,44 @@ func viewFalling(m model) string {
 		}
 	}
 
-	// Place 2-row alien sprites
+	// Place multi-row alien sprites
 	for _, fw := range m.fallingWords {
-		bodyRow := int(fw.y)
-		headRow := bodyRow - 1
-		sprite := alienSprites[spriteForWord(fw.word)]
-		headStr := buildHead(fw.word, sprite)
-		headRunes := []rune(headStr)
+		art := buildAlienArt(fw.word)
+		wordRowY := int(fw.y) // the word row on the grid
 
 		aStyle := sAlien
 		if fw.active {
 			aStyle = sAlienActive
 		}
 
-		// --- Head row ---
-		if headRow >= 0 && headRow < playHeight {
-			for i, ch := range headRunes {
-				col := fw.x - wingWidth + i
-				if col >= 0 && col < playWidth {
-					grid[headRow][col] = aStyle.Render(string(ch))
-				}
-			}
-		}
-
-		// --- Body row ---
-		if bodyRow >= 0 && bodyRow < playHeight {
-			bodyLeftRunes := []rune(sprite.bodyLeft)
-			for i, ch := range bodyLeftRunes {
-				col := fw.x - len(bodyLeftRunes) + i
-				if col >= 0 && col < playWidth {
-					grid[bodyRow][col] = aStyle.Render(string(ch))
-				}
+		for rowIdx, line := range art.lines {
+			gridRow := wordRowY - art.wordRow + rowIdx
+			if gridRow < 0 || gridRow >= playHeight {
+				continue
 			}
 
-			for j, ch := range []rune(fw.word) {
-				col := fw.x + j
-				if col < 0 || col >= playWidth {
+			for colIdx, ch := range []rune(line) {
+				if ch == ' ' {
+					continue // don't overwrite grid background with spaces
+				}
+				gridCol := fw.x + colIdx
+				if gridCol < 0 || gridCol >= playWidth {
 					continue
 				}
-				if fw.active && j < fw.typed {
-					grid[bodyRow][col] = styleCorrect.Render(string(ch))
-				} else if fw.active {
-					grid[bodyRow][col] = styleCursor.Render(string(ch))
-				} else {
-					grid[bodyRow][col] = sUntyped.Render(string(ch))
-				}
-			}
 
-			bodyRightRunes := []rune(sprite.bodyRight)
-			for i, ch := range bodyRightRunes {
-				col := fw.x + len([]rune(fw.word)) + i
-				if col >= 0 && col < playWidth {
-					grid[bodyRow][col] = aStyle.Render(string(ch))
+				// Is this character part of the word text?
+				if rowIdx == art.wordRow && colIdx >= art.wordCol && colIdx < art.wordCol+art.wordLen {
+					charIdx := colIdx - art.wordCol
+					if fw.active && charIdx < fw.typed {
+						grid[gridRow][gridCol] = styleCorrect.Render(string(ch))
+					} else if fw.active {
+						grid[gridRow][gridCol] = styleCursor.Render(string(ch))
+					} else {
+						grid[gridRow][gridCol] = sUntyped.Render(string(ch))
+					}
+				} else {
+					// Alien decoration character
+					grid[gridRow][gridCol] = aStyle.Render(string(ch))
 				}
 			}
 		}
@@ -708,9 +705,6 @@ func viewFalling(m model) string {
 		hint,
 	)
 
-	// For day/night cycle: fill the entire terminal with the background color
-	// using lipgloss.Place with WhitespaceBackground. This fills ALL empty
-	// space (including margins and padding) with the cycle bg color.
 	if hasCycle {
 		return lipgloss.Place(m.width, m.height,
 			lipgloss.Left, lipgloss.Top,
