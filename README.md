@@ -2,6 +2,8 @@
 
 A terminal typing game built with Go and [Bubbletea](https://github.com/charmbracelet/bubbletea). Two game modes: a monkeytype-style typing test and a falling words arcade game with ASCII art aliens, sound effects, and a day/night cycle.
 
+![Menu](images/menu.png)
+
 ## Install
 
 Requires [Go](https://go.dev/dl/) 1.25+.
@@ -25,10 +27,14 @@ go build -o cli_typer .
 
 A clean, monkeytype-inspired typing test. Words appear in a 3-line scrolling window. Type them as fast and accurately as you can before the timer runs out.
 
+![Classic typing test](images/classic.png)
+
 - Choose between **random words** or **famous quotes**
 - Timed: **15s**, **30s**, or **60s**
 - Live WPM counter while you type
-- Results: net WPM, accuracy, characters, words
+- Results screen with net WPM, accuracy, characters, and words
+
+![Results](images/wpm.png)
 
 **Controls:**
 - Type normally to begin (timer starts on first keypress)
@@ -41,17 +47,18 @@ A clean, monkeytype-inspired typing test. Words appear in a 3-line scrolling win
 
 Words wrapped in ASCII art aliens fall from the sky toward your shield. Type each word to lock on and destroy it with a laser before it breaks through. You have 3 lives.
 
-```
-  ╱◉‾‾‾◉╲       ¤◉───◉¤
-  >{the}<        ◀[quick]▶
-```
+![Falling words gameplay](images/falling.png)
 
+- **4 alien sprite variants** with ASCII art heads and eyes
 - **Turret** on the shield tracks your target and slides toward it as you type
 - **Laser beam** fires from the turret to the alien on word completion
 - **Explosion** particles burst where the alien was
+
+![Laser and explosion](images/laser.png)
+
 - **Difficulty ramps** — words fall faster and spawn more frequently over time
-- **Sound effects** — destroy, shield hit, game over (embedded OGG via [beep](https://github.com/gopxl/beep))
-- **Day/night cycle** (optional) — sun and moon arc across the sky, terminal background shifts from white (day) to black (night)
+- **Sound effects** — destroy, shield hit, game over
+- **Day/night cycle** (optional) — sun and moon arc across the sky, background shifts from white to black
 
 **Controls:**
 - Start typing to target the lowest matching word
@@ -62,17 +69,7 @@ Words wrapped in ASCII art aliens fall from the sky toward your shield. Type eac
 
 ## Menu
 
-Navigate with arrow keys (or `hjkl`), change options with left/right, press `enter` to start.
-
-```
-cli_typer
-
-▸ game      [ classic ]  falling
-  words     [ words ]    quotes
-  duration  [ 30s ]
-```
-
-When falling mode is selected, the duration row is replaced with a day/night cycle toggle.
+Navigate with arrow keys (or `hjkl`), change options with left/right, press `enter` to start. When falling mode is selected, the duration row is replaced with a day/night cycle toggle.
 
 ## Sound Effects
 
